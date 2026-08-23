@@ -177,3 +177,140 @@ def recalculate_learning_state(
     db.commit()
     db.refresh(state)
     return state
+
+
+# ---------------------------------------------------------------------
+# Phase 3C: deterministic explainability.
+#
+# explain_learning_state is a read-only counterpart to
+# recalculate_learning_state: same evidence, same existing scoring
+# config, but it never writes anything (no LearningState upsert, no
+# EvidenceEvent mutation) and it returns a breakdown meant for a human
+# (or a future dashboard) rather than a metrics dict for internal use.
+# It reuses compute_metrics() so the numbers it explains are always the
+# exact numbers recalculate_learning_state would also produce — no
+# separate/duplicate scoring path, and no LLM involved anywhere here.
+# ---------------------------------------------------------------------
+
+_METRIC_LABELS: dict[str, str] = {
+    "accuracy": "Accuracy",
+    "concept_mastery": "Concept mastery",
+    "problem_solving_score": "Problem-solving performance",
+}
+
+# Mirrors the order/thresholds of CONFIDENCE_BUCKETS so the wording stays
+# in sync with the actual confidence math instead of duplicating magic
+# numbers — if the buckets in config.py change, these labels line up
+# with them automatically.
+_CONFIDENCE_BUCKET_LABELS = ["limited", "medium-low", "medium"]
+
+
+def _signal_statements(metrics: dict) -> tuple[str | None, str | None]:
+    """
+    Compares the three headline metrics (accuracy, concept_mastery,
+    problem_solving_score) and says which is currently strongest/weakest
+    — a plain min/max over numbers Atlas already computed, not a new
+    judgment. Returns (None, None) when there's no evidence at all, and
+    collapses to a single neutral statement (as both strongest and
+    weakest) when every metric is exactly tied, since calling one
+    "strongest" over an identical value would be a distinction the
+    evidence doesn't support.
+    """
+    if metrics["evidence_count"] == 0:
+        return None, None
+
+    comparable = {
+        "accuracy": metrics["accuracy"],
+        "concept_mastery": metrics["concept_mastery"],
+        "problem_solving_score": metrics["problem_solving_score"],
+    }
+    strongest_key = max(comparable, key=comparable.get)
+    weakest_key = min(comparable, key=comparable.get)
+
+    if comparable[strongest_key] == comparable[weakest_key]:
+        tie_statement = (
+            "Accuracy, concept mastery, and problem-solving performance are "
+            "all at the same level right now — no signal currently stands out."
+        )
+        return tie_statement, tie_statement
+
+    strongest = f"{_METRIC_LABELS[strongest_key]} is currently the strongest measured signal."
+    weakest = f"{_METRIC_LABELS[weakest_key]} is currently the weakest measured signal."
+    return strongest, weakest
+
+
+def _confidence_explanation(evidence_count: int) -> str:
+    """
+    Plain-language version of compute_confidence's bucket logic — walks
+    the same CONFIDENCE_BUCKETS thresholds from config.py rather than
+    hardcoding separate numbers, so this text can never drift out of
+    sync with what confidence_score actually reflects.
+    """
+    if evidence_count <= 0:
+        return "No evidence exists yet for this concept, so confidence is zero."
+
+    for (threshold, _), label in zip(CONFIDENCE_BUCKETS, _CONFIDENCE_BUCKET_LABELS):
+        if evidence_count <= threshold:
+            return (
+                f"Evidence confidence is {label} because only {evidence_count} "
+                "relevant attempt(s) exist so far."
+            )
+
+    return (
+        f"Evidence confidence is higher, based on {evidence_count} relevant "
+        "attempts, though it is never treated as full certainty."
+    )
+
+
+def _question_type_breakdown(events) -> list[dict]:
+    """Per-question_type counts/accuracy actually observed in the evidence — nothing inferred."""
+    by_type: dict[str, dict] = {}
+    for event in events:
+        bucket = by_type.setdefault(event.question_type, {"count": 0, "correct_count": 0})
+        bucket["count"] += 1
+        if event.correct:
+            bucket["correct_count"] += 1
+
+    breakdown = []
+    for question_type, counts in sorted(by_type.items()):
+        accuracy = round((counts["correct_count"] / counts["count"]) * 100, 2)
+        breakdown.append(
+            {
+                "question_type": question_type,
+                "count": counts["count"],
+                "correct_count": counts["correct_count"],
+                "accuracy": accuracy,
+            }
+        )
+    return breakdown
+
+
+def explain_learning_state(db: Session, student_id: uuid.UUID, concept_id: uuid.UUID) -> dict:
+    """
+    Read-only explanation of the current LearningState for (student,
+    concept), derived live from EvidenceEvent using the same scoring
+    config as recalculate_learning_state. No LLM, no stored explanation
+    text (per PRD instruction, explanations are a derived view, not
+    something persisted), and EvidenceEvent is only ever read.
+    """
+    events = _fetch_relevant_evidence(db, student_id, concept_id)
+    metrics = compute_metrics(events)
+
+    correct_count = sum(1 for e in events if e.correct)
+    incorrect_count = len(events) - correct_count
+    average_hints_used = (
+        round(sum(e.hints_used for e in events) / len(events), 2) if events else 0.0
+    )
+    strongest_signal, weakest_signal = _signal_statements(metrics)
+
+    return {
+        "concept_id": concept_id,
+        "evidence_count": metrics["evidence_count"],
+        "correct_count": correct_count,
+        "incorrect_count": incorrect_count,
+        "average_hints_used": average_hints_used,
+        "question_type_breakdown": _question_type_breakdown(events),
+        "strongest_signal": strongest_signal,
+        "weakest_signal": weakest_signal,
+        "confidence_explanation": _confidence_explanation(metrics["evidence_count"]),
+    }
