@@ -10,3 +10,4 @@ from app.curriculum import models as curriculum_models  # noqa: F401
 from app.questions import models as questions_models  # noqa: F401
 from app.students import attempt_models as attempt_models  # noqa: F401
 from app.evidence import models as evidence_models  # noqa: F401
+from app.learning_dna import models as learning_dna_models  # noqa: F401

@@ -10,10 +10,11 @@ from app.evidence.router import router as evidence_router
 app = FastAPI(
     title="Atlas API",
     description=(
-        "Adaptive learning system — Phase 1 (auth, curriculum, questions) "
-        "+ Phase 2 (attempts, evidence)."
+        "Adaptive learning system — Phase 1 (auth, curriculum, questions), "
+        "Phase 2 (attempts, evidence), Phase 3A (Learning DNA data foundation — "
+        "no scoring or diagnostics API yet)."
     ),
-    version="0.2.0",
+    version="0.2.1",
 )
 
 app.include_router(auth_router)
