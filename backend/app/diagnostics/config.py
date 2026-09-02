@@ -39,12 +39,13 @@ DIAGNOSTIC_CATEGORY_CRITERIA: dict[str, dict] = {
         "question_type": [QuestionType.CONCEPTUAL],
     },
     "standard_application": {
-    "question_type": [
-        QuestionType.APPLICATION,
-        QuestionType.FORMULA_RECALL,
-        QuestionType.PYQ_STYLE,
-    ],
-},
+        "question_type": [
+            QuestionType.APPLICATION,
+            QuestionType.NUMERICAL,
+            QuestionType.FORMULA_RECALL,
+            QuestionType.PYQ_STYLE,
+        ],
+    },
     "strategy_selection": {
         "problem_solving_skill": [
             ProblemSolvingSkill.STRATEGY_SETUP,

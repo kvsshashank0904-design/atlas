@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.students.models import StudentProfile
 from app.students.dependencies import get_current_student_profile
+from app.curriculum.models import Concept
 from app.diagnostics.models import DiagnosticSession
 from app.diagnostics.schemas import (
     DiagnosticStartRequest,
@@ -14,8 +15,10 @@ from app.diagnostics.schemas import (
     DiagnosticNoMoreQuestionsOut,
     DiagnosticAnswerSubmit,
     DiagnosticAnswerResult,
+    DiagnosticCompletionOut,
 )
 from app.diagnostics import service as diagnostic_service
+from app.learning_dna.router import _to_learning_state_out
 
 router = APIRouter(prefix="/diagnostics", tags=["diagnostics"])
 
@@ -139,4 +142,47 @@ def answer_diagnostic_question(
 
     return DiagnosticAnswerResult(
         attempt=attempt, remaining_questions=remaining, diagnostic_complete=remaining == 0
+    )
+
+
+@router.post("/{session_id}/complete", response_model=DiagnosticCompletionOut)
+def complete_diagnostic(
+    session_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    student: StudentProfile = Depends(get_current_student_profile),
+):
+    """
+    Section 13's "EvidenceEvents -> Learning DNA -> LearningState" flow,
+    triggered explicitly rather than automatically, and reusing Phase
+    3B's recalculate_learning_state as-is (see
+    diagnostics/service.complete_diagnostic — no scoring logic lives
+    here). Idempotent: calling this again on an already-completed
+    session safely re-returns a (re-)computed result rather than erroring
+    or duplicating anything.
+    """
+    session = _get_owned_session(db, session_id, student)
+
+    try:
+        session, states = diagnostic_service.complete_diagnostic(db, session)
+    except diagnostic_service.DiagnosticIncompleteError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    answered, _ = diagnostic_service.get_progress(db, session)
+    tested_concept_ids = diagnostic_service.get_tested_concepts(db, session)
+
+    concepts_by_id = {
+        c.id: c for c in db.query(Concept).filter(Concept.id.in_(tested_concept_ids)).all()
+    }
+    # states is already ordered to match tested_concept_ids (see
+    # complete_diagnostic), so this stays deterministic.
+    learning_states = [_to_learning_state_out(state, concepts_by_id[state.concept_id]) for state in states]
+
+    return DiagnosticCompletionOut(
+        id=session.id,
+        status=session.status,
+        total_questions=session.total_questions,
+        answered_count=answered,
+        completed_at=session.completed_at,
+        concepts_evaluated=tested_concept_ids,
+        learning_states=learning_states,
     )

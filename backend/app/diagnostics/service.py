@@ -1,14 +1,16 @@
 """
-Diagnostic session lifecycle for Phase 3D-1. Deliberately does NOT
+Diagnostic session lifecycle for Phase 3D-1/3D-2. Deliberately does NOT
 reimplement grading or evidence creation — every diagnostic answer goes
 through app.students.attempt_service.grade_and_record_attempt, the exact
 same function Phase 2's POST /attempts uses, so there is only ever one
 grading/evidence pipeline in the whole system.
 
-Also deliberately does NOT trigger Learning DNA recalculation or mark a
-session COMPLETED — that's Phase 3D-2, per instruction.
+Phase 3D-2 adds completion -> Learning DNA recalculation. It reuses
+app.learning_dna.service.recalculate_learning_state exactly as-is — no
+scoring logic is duplicated here.
 """
 import uuid
+from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
@@ -17,7 +19,7 @@ from app.questions.models import Question
 from app.students.attempt_models import Attempt
 from app.students.attempt_schemas import AttemptSubmit
 from app.students.attempt_service import grade_and_record_attempt
-from app.diagnostics.models import DiagnosticSession, DiagnosticSessionItem
+from app.diagnostics.models import DiagnosticSession, DiagnosticSessionItem, DiagnosticStatus
 from app.diagnostics.schemas import DiagnosticAnswerSubmit
 from app.diagnostics.config import (
     DIAGNOSTIC_DEFAULT_SUBJECT_EXAM_PACK,
@@ -25,6 +27,8 @@ from app.diagnostics.config import (
     DIAGNOSTIC_TARGET_DISTRIBUTION,
     DIAGNOSTIC_CATEGORY_CRITERIA,
 )
+from app.learning_dna.models import LearningState
+from app.learning_dna.service import recalculate_learning_state
 
 
 class ChapterNotFoundError(ValueError):
@@ -50,6 +54,11 @@ class DuplicateAnswerError(ValueError):
 
 
 class OutOfSessionQuestionError(ValueError):
+    pass
+
+
+class DiagnosticIncompleteError(ValueError):
+    """Raised when /complete is called before every frozen item has an attempt."""
     pass
 
 
@@ -86,6 +95,20 @@ def select_diagnostic_questions(
     Selection order within each category is deterministic (concept_code,
     difficulty, then id) so the same question bank always produces the
     same diagnostic — no randomness, no adaptivity, per PRD Section 13.
+
+    Categories are processed skill-criteria-first, not in the dict's
+    declaration order. problem_solving_skill and question_type are
+    independent fields on the same Question row, so a skill-based
+    category (currently only strategy_selection) can match a question
+    that a type-based category (e.g. standard_application, which accepts
+    numerical/application/formula_recall/pyq_style) would ALSO match.
+    Skill-tagged questions are the narrower, more specific signal, so
+    they must be claimed first — otherwise a broad type-based category
+    processed earlier can greedily consume questions a skill-based
+    category actually needs, understating the bank's true availability
+    for that category. This generalizes to any future category/config
+    change (it keys off the *kind* of criteria, not category names), so
+    it doesn't need to be re-fixed if the distribution is retuned later.
     """
     distribution = distribution or DIAGNOSTIC_TARGET_DISTRIBUTION
 
@@ -100,7 +123,12 @@ def select_diagnostic_questions(
     selected: list[Question] = []
     shortfalls: dict[str, dict[str, int]] = {}
 
-    for category, target_count in distribution.items():
+    def _category_priority(category: str) -> int:
+        return 0 if "problem_solving_skill" in DIAGNOSTIC_CATEGORY_CRITERIA[category] else 1
+
+    ordered_categories = sorted(distribution.items(), key=lambda item: _category_priority(item[0]))
+
+    for category, target_count in ordered_categories:
         criteria = DIAGNOSTIC_CATEGORY_CRITERIA[category]
         pool = [
             q for q in candidates
@@ -245,3 +273,77 @@ def submit_diagnostic_answer(
 
     _, remaining = get_progress(db, session)
     return attempt, remaining
+
+
+def get_tested_concepts(db: Session, session: DiagnosticSession) -> list[uuid.UUID]:
+    """
+    The unique primary_concept_id values actually represented among this
+    session's frozen DiagnosticSessionItem questions — never a hardcoded
+    concept/chapter name, and never inferred from anything other than
+    the frozen question set itself. This is what keeps the completion
+    step reusable for any future chapter/subject: it only ever looks at
+    "which concepts did the questions in THIS session actually belong
+    to," regardless of what those concepts are called.
+
+    Sorted by string form of the id purely for deterministic response
+    ordering — it carries no other meaning.
+    """
+    rows = (
+        db.query(Question.primary_concept_id)
+        .join(DiagnosticSessionItem, DiagnosticSessionItem.question_id == Question.id)
+        .filter(DiagnosticSessionItem.session_id == session.id)
+        .distinct()
+        .all()
+    )
+    concept_ids = {row[0] for row in rows}
+    return sorted(concept_ids, key=str)
+
+
+def complete_diagnostic(
+    db: Session, session: DiagnosticSession
+) -> tuple[DiagnosticSession, list[LearningState]]:
+    """
+    Determines which concepts this session actually tested, calls the
+    EXISTING Phase 3B recalculate_learning_state(...) once per concept
+    (no scoring logic duplicated here), and marks the session COMPLETED
+    only after every recalculation succeeds.
+
+    Idempotent: if the session is already COMPLETED, this skips the
+    "fully answered" check (it was already satisfied the first time —
+    frozen items never change afterward) and re-runs the same
+    recalculation. recalculate_learning_state is itself a pure
+    read-evidence/upsert-state operation, so calling it again with no
+    new evidence reproduces the same LearningState values and never
+    creates a duplicate row (Phase 3A's unique constraint) or touches
+    Attempt/EvidenceEvent at all. completed_at is set only on the
+    transition into COMPLETED, so repeated calls don't move it.
+
+    Transaction safety: session.status/completed_at are only written
+    AFTER every recalculate_learning_state call has returned
+    successfully. If recalculation raises partway through, the session
+    is left IN_PROGRESS rather than being marked COMPLETED over a
+    partial result — the student (or a retry) can safely call complete
+    again later, since recalculation is idempotent per concept.
+    """
+    if session.status != DiagnosticStatus.COMPLETED:
+        _, remaining = get_progress(db, session)
+        if remaining > 0:
+            raise DiagnosticIncompleteError(
+                f"Diagnostic session is not fully answered yet: "
+                f"{remaining} of {session.total_questions} question(s) remain."
+            )
+
+    tested_concept_ids = get_tested_concepts(db, session)
+
+    states: list[LearningState] = [
+        recalculate_learning_state(db, session.student_id, concept_id)
+        for concept_id in tested_concept_ids
+    ]
+
+    if session.status != DiagnosticStatus.COMPLETED:
+        session.status = DiagnosticStatus.COMPLETED
+        session.completed_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(session)
+
+    return session, states

@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from app.diagnostics.models import DiagnosticStatus
 from app.students.attempt_models import ConfidenceLevel
 from app.students.attempt_schemas import AttemptOut
+from app.learning_dna.schemas import LearningStateOut
 
 
 class DiagnosticStartRequest(BaseModel):
@@ -73,3 +74,20 @@ class DiagnosticAnswerResult(BaseModel):
     attempt: AttemptOut
     remaining_questions: int
     diagnostic_complete: bool
+
+
+class DiagnosticCompletionOut(BaseModel):
+    """
+    POST /diagnostics/{id}/complete response. Reuses learning_dna's own
+    LearningStateOut for the resulting scores rather than inventing a
+    parallel representation — a completed diagnostic's Learning DNA
+    summary is presented identically to how GET /learning-dna/me already
+    presents it, just scoped to the concepts this session tested.
+    """
+    id: uuid.UUID
+    status: DiagnosticStatus
+    total_questions: int
+    answered_count: int
+    completed_at: datetime | None
+    concepts_evaluated: list[uuid.UUID]
+    learning_states: list[LearningStateOut]
