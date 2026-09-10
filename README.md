@@ -5,9 +5,9 @@ what a student does, derives a learning state from evidence, and is being
 extended to choose, deliver, and evaluate the next useful intervention.
 
 **Development status: MVP in progress, not yet hackathon-ready.** The existing
-backend works through diagnostic completion and Learning DNA. The connected
-browser experience, Study GPS, owned study sessions, mistake probes, and
-closed-loop adaptation are the remaining implementation milestones.
+backend and connected frontend implement authentication, onboarding, diagnostics,
+and evidence-backed Learning DNA. Study GPS, owned study sessions, mistake probes,
+closed-loop adaptation, and final PostgreSQL/browser acceptance remain outstanding.
 
 ## Product loop
 
@@ -131,9 +131,17 @@ npm ci
 npm run dev
 ```
 
-Open `http://localhost:3000`. **The initial dashboard remains a presentation
-prototype until frontend integration is completed.** Do not interpret its
-placeholder metrics as real student data.
+Open `http://localhost:3000`. Create an account, complete onboarding, and start
+or resume the 20-question Mechanics diagnostic. Explicitly complete it to update
+Learning DNA, then select a concept to inspect the supporting evidence.
+
+The frontend forwards `/api/*` to `http://127.0.0.1:8000/*`. To change the backend,
+set `ATLAS_BACKEND_URL` in `frontend/.env.local` before starting or building Next.js.
+This same-origin proxy avoids a separate browser CORS configuration. Login uses
+form encoding and persists the bearer token locally; logout clears the student UI.
+Active screens use backend data. Empty concepts remain unmeasured. The coordinate
+plot shows current mastery and problem-solving values, not historical progress
+or the output of a trained SVM.
 
 ## Verification
 
@@ -170,16 +178,16 @@ Linux/macOS equivalent:
 ATLAS_TEST_POSTGRES_ADMIN_URL=postgresql+psycopg2://atlas:atlas@localhost:5432/postgres python -m pytest tests/test_postgresql_reliability.py -q
 ```
 
-Latest completed Phase 2 run: **102 passed, 4 skipped, 0 failures,
-366 deprecation warnings**. The four skipped tests require live PostgreSQL.
+Latest completed Phase 3 run: **104 passed, 4 skipped, 0 failures,
+371 deprecation warnings**. The four skipped tests require live PostgreSQL.
 Frontend typecheck, ESLint, and production build passed again at this checkpoint.
 
 ## Completion roadmap
 
 1. Backend stability — locally verified; live PostgreSQL gate open.
 2. Mechanics bank and diagnostic readiness — locally verified; PostgreSQL gate open.
-3. Authentication, onboarding, and diagnostic browser integration.
-4. Evidence-backed Learning DNA interface.
+3. Authentication, onboarding, and diagnostic integration — implemented; signed-in browser acceptance open.
+4. Evidence-backed Learning DNA interface — implemented; signed-in browser acceptance open.
 5. Deterministic, explainable Study GPS.
 6. Owned, resumable, retry-safe study sessions.
 7. Narrow authored-probe mistake observations; undetermined when unsupported.
@@ -189,3 +197,20 @@ Frontend typecheck, ESLint, and production build passed again at this checkpoint
 
 Changes are uploaded only when explicitly requested. See
 [the implementation record](docs/MVP-IMPLEMENTATION.md) for progress.
+
+### Real frontend API integration smoke check
+
+Use only a disposable migrated database seeded with `python -m scripts.seed_mvp`.
+Run FastAPI and Next.js against it, then from `frontend/`:
+
+```bash
+ATLAS_SMOKE_ALLOW_WRITE=yes ATLAS_SMOKE_BASE_URL=http://localhost:3000 npm run test:api
+```
+
+This creates a disposable student and 20 real diagnostic attempts through the
+actual frontend API client and Next proxy. It verifies login, onboarding,
+prerequisite retrieval, resume, duplicate rejection, deferred recalculation,
+completion, evidence consistency and token expiry. It leaves that test student in
+the disposable database. It does not automate browser clicks or replace backend
+responses. This check passed against a fresh migrated, seeded SQLite QA database;
+it does not close the PostgreSQL or signed-in browser acceptance gates.

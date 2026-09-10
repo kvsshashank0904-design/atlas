@@ -16,7 +16,18 @@ def list_subjects(db: Session = Depends(get_db), _=Depends(get_current_user)):
         .options(joinedload(Subject.chapters).joinedload(Chapter.concepts))
         .all()
     )
-    return subjects
+    result = []
+    for subject in subjects:
+        out = SubjectOut.model_validate(subject)
+        concepts = {c.id: c for chapter in subject.chapters for c in chapter.concepts}
+        for chapter in out.chapters:
+            for concept in chapter.concepts:
+                concept.prerequisite_concept_codes = sorted(
+                    link.prerequisite_concept.concept_code
+                    for link in concepts[concept.id].prerequisite_links
+                )
+        result.append(out)
+    return result
 
 
 @router.get("/concepts/{concept_code}", response_model=ConceptOut)

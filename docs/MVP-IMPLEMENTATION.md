@@ -47,7 +47,7 @@ Live PostgreSQL verification remains required before final acceptance. The user 
 - frontend/package-lock.json captures the successfully installed existing dependency versions.
 - No frontend functionality changed in this milestone.
 
-## Next phase: Milestone 3
+## Planned at Phase 2 checkpoint: Milestone 3
 Connect the existing Next.js dashboard to FastAPI with auth, onboarding, a diagnostic runner,
 resume and explicit completion. Preserve current components and deterministic services.
 Then implement real Learning DNA UI (Milestone 4), Study GPS (5), sessions (6),
@@ -56,7 +56,7 @@ Do not claim the complete MVP is ready at this checkpoint.
 
 ## Current limitations
 - Live PostgreSQL: 4 opt-in checks still need a PostgreSQL host.
-- Browser end-to-end learning flow: not implemented yet; the frontend is still the existing prototype.
+- Browser end-to-end learning flow: implementation now present; signed-in browser acceptance still open.
 - Seed is an additive MVP bank, not a comprehensive JEE preparation library.
 - The reserved probe sequences target strategy selection; no misconception diagnoses are yet implemented.
 - Local source began as an audited snapshot without a normal Git parent. Uploads must build on
@@ -83,3 +83,52 @@ backend/tests/test_backend_reliability.py; backend/tests/test_migrations_and_see
 backend/tests/test_mvp_content.py; backend/tests/test_mvp_stability.py;
 backend/tests/test_postgresql_reliability.py; docs/MVP-IMPLEMENTATION.md;
 frontend/package-lock.json.
+
+
+## Phase 3 checkpoint — frontend integration and Learning DNA
+
+Implemented the existing dashboard's real auth/onboarding/diagnostic flow and
+Learning DNA inspection. Signup/login, token persistence/expiry/logout, loading,
+errors, explicit completion, and server-backed resume are connected. The active
+page no longer consumes mock dashboard data. Added GET /diagnostics/me with
+student isolation, and actual prerequisite codes in nested curriculum responses.
+No schema, dependency, scoring, or existing test changes in this phase.
+
+Visual direction: charcoal laboratory panels, restrained aqua accents, coordinate
+grids, clear typography, actual mastery/problem-solving points, evidence readings,
+and unmeasured states. No trained SVM, invented trajectories, or fake readiness.
+
+Files changed relative to Phase 2:
+- README.md; docs/MVP-IMPLEMENTATION.md
+- backend/app/curriculum/router.py; backend/app/diagnostics/router.py
+- backend/tests/test_frontend_contracts.py
+- frontend/app/page.tsx; frontend/app/layout.tsx; frontend/app/globals.css
+- frontend/components/atlas-workspace.tsx; frontend/components/model-view.tsx;
+  frontend/components/question-workspace.tsx
+- frontend/components/dashboard/navbar.tsx; frontend/components/dashboard/hero.tsx
+- frontend/lib/atlas-api.ts; frontend/next.config.ts; frontend/package.json
+- frontend/scripts/dev.mjs; frontend/scripts/smoke-api.mjs
+
+Tests added:
+- test_diagnostic_list_is_owned_resumable_and_has_no_answers
+- test_curriculum_list_contains_actual_prerequisite_edges
+- scripts/smoke-api.mjs: real frontend API client through Next proxy and FastAPI;
+  signup, invalid login, onboarding, curriculum prerequisites, 20 answers,
+  duplicates, persisted progress, completion, DNA/evidence consistency, expiry.
+  Browser storage/events are adapted for Node; HTTP responses are never mocked.
+
+Verification:
+- Before changes: 102 passed, 4 skipped, 366 warnings.
+- After changes: 104 passed, 4 skipped, 0 failures, 371 deprecation warnings.
+- TypeScript, ESLint and production build pass. Recoverable Turbopack cache reset
+  warning did not prevent the build.
+- API smoke check passed against real servers and a migrated, seeded disposable
+  SQLite database. All original tests retained.
+- Public entry screen rendered and visually inspected in the supervised browser.
+- Signed-in browser interaction and mobile viewport acceptance are still open;
+  API smoke coverage is not a substitute for that walkthrough.
+- PostgreSQL unavailable: the four opt-in checks remain skipped.
+
+Next bounded phase: deterministic Study GPS, followed by owned study sessions,
+authored mistake probes and closed-loop adaptation. Keep PR draft; this checkpoint
+is not the complete hackathon MVP. Do not merge master automatically.
