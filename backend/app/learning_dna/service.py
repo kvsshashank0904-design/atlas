@@ -132,7 +132,7 @@ def _fetch_relevant_evidence(
 
 
 def recalculate_learning_state(
-    db: Session, student_id: uuid.UUID, concept_id: uuid.UUID
+    db: Session, student_id: uuid.UUID, concept_id: uuid.UUID, *, commit: bool = True
 ) -> LearningState:
     """
     Fetches all evidence for (student, concept), recomputes every metric
@@ -145,6 +145,7 @@ def recalculate_learning_state(
     With zero evidence, still upserts a LearningState at all-zero/no-
     confidence values rather than raising — "no evidence yet" is a valid,
     representable state, not an error.
+    Pass commit=False to include this upsert in the caller's transaction.
     """
     events = _fetch_relevant_evidence(db, student_id, concept_id)
     metrics = compute_metrics(events)
@@ -174,8 +175,10 @@ def recalculate_learning_state(
         )
         db.add(state)
 
-    db.commit()
-    db.refresh(state)
+    db.flush()
+    if commit:
+        db.commit()
+        db.refresh(state)
     return state
 
 

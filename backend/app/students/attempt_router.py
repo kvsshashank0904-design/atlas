@@ -3,11 +3,12 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.students.models import StudentProfile
-from app.students.dependencies import get_current_student_profile
+from app.students.dependencies import get_current_student_profile, lock_student_for_update
 from app.students.attempt_models import Attempt
 from app.students.attempt_schemas import AttemptSubmit, AttemptOut
 from app.students.attempt_service import grade_and_record_attempt
 from app.questions.models import Question
+from app.learning_dna.service import recalculate_learning_state
 
 router = APIRouter(prefix="/attempts", tags=["attempts"])
 
@@ -28,7 +29,15 @@ def submit_attempt(
     if not question:
         raise HTTPException(status_code=404, detail="Question not found")
 
-    attempt = grade_and_record_attempt(db, student.id, payload, question)
+    try:
+        lock_student_for_update(db, student.id)
+        attempt = grade_and_record_attempt(db, student.id, payload, question, commit=False)
+        recalculate_learning_state(db, student.id, question.primary_concept_id, commit=False)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    db.refresh(attempt)
     return attempt
 
 

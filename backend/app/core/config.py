@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     LLM_PROVIDER: str = "anthropic"
     ANTHROPIC_API_KEY: str = ""
 
+    CONTENT_EDITOR_EMAILS: str = ""
+
     ENVIRONMENT: str = "development"
 
 

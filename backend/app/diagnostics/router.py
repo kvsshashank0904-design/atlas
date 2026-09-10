@@ -23,6 +23,19 @@ from app.learning_dna.router import _to_learning_state_out
 router = APIRouter(prefix="/diagnostics", tags=["diagnostics"])
 
 
+@router.get("/me", response_model=list[DiagnosticSessionOut])
+def list_my_diagnostics(
+    db: Session = Depends(get_db),
+    student: StudentProfile = Depends(get_current_student_profile),
+):
+    """Recover owned sessions after refresh, logout or a lost start response."""
+    sessions = (db.query(DiagnosticSession)
+                .filter(DiagnosticSession.student_id == student.id)
+                .order_by(DiagnosticSession.started_at.desc(), DiagnosticSession.id.desc())
+                .limit(100).all())
+    return [_to_session_out(db, session) for session in sessions]
+
+
 def _get_owned_session(
     db: Session, session_id: uuid.UUID, student: StudentProfile
 ) -> DiagnosticSession:
