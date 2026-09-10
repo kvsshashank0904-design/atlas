@@ -14,10 +14,12 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from app.curriculum.models import Chapter, Concept
+from app.curriculum.models import Chapter, Concept, Subject
 from app.questions.models import Question
+from app.questions.mechanics_content import RESERVED_IDS
 from app.students.attempt_models import Attempt
 from app.students.attempt_schemas import AttemptSubmit
+from app.students.dependencies import lock_student_for_update
 from app.students.attempt_service import grade_and_record_attempt
 from app.diagnostics.models import DiagnosticSession, DiagnosticSessionItem, DiagnosticStatus
 from app.diagnostics.schemas import DiagnosticAnswerSubmit
@@ -114,7 +116,7 @@ def select_diagnostic_questions(
 
     concept_ids = [c.id for c in db.query(Concept).filter(Concept.chapter_id == chapter_id).all()]
     candidates = (
-        db.query(Question).filter(Question.primary_concept_id.in_(concept_ids)).all()
+        db.query(Question).filter(Question.primary_concept_id.in_(concept_ids), Question.id.notin_(RESERVED_IDS)).all()
         if concept_ids
         else []
     )
@@ -158,6 +160,7 @@ def _resolve_chapter(db: Session, chapter_id: uuid.UUID | None) -> Chapter:
         .join(Chapter.subject)
         .filter(
             Chapter.name == DIAGNOSTIC_DEFAULT_CHAPTER_NAME,
+            Subject.exam_pack == DIAGNOSTIC_DEFAULT_SUBJECT_EXAM_PACK,
         )
         .first()
     )
@@ -241,35 +244,41 @@ def submit_diagnostic_answer(
     session's own id — never taken from the client — so every
     diagnostic attempt is unambiguously traceable to its session.
     """
-    item = (
-        db.query(DiagnosticSessionItem)
-        .filter(
-            DiagnosticSessionItem.session_id == session.id,
-            DiagnosticSessionItem.question_id == payload.question_id,
+    try:
+        lock_student_for_update(db, student_id)
+        item = (
+            db.query(DiagnosticSessionItem)
+            .populate_existing()
+            .filter(
+                DiagnosticSessionItem.session_id == session.id,
+                DiagnosticSessionItem.question_id == payload.question_id,
+            )
+            .first()
         )
-        .first()
-    )
-    if item is None:
-        raise OutOfSessionQuestionError(
-            "This question is not part of this diagnostic session."
+        if item is None:
+            raise OutOfSessionQuestionError(
+                "This question is not part of this diagnostic session."
+            )
+        if item.attempt_id is not None:
+            raise DuplicateAnswerError("This diagnostic question has already been answered.")
+
+        question = db.get(Question, payload.question_id)
+        attempt_payload = AttemptSubmit(
+            question_id=payload.question_id,
+            selected_answer=payload.selected_answer,
+            response_time_seconds=payload.response_time_seconds,
+            hints_used=payload.hints_used,
+            confidence=payload.confidence,
+            session_id=str(session.id),
         )
-    if item.attempt_id is not None:
-        raise DuplicateAnswerError("This diagnostic question has already been answered.")
-
-    question = db.get(Question, payload.question_id)
-
-    attempt_payload = AttemptSubmit(
-        question_id=payload.question_id,
-        selected_answer=payload.selected_answer,
-        response_time_seconds=payload.response_time_seconds,
-        hints_used=payload.hints_used,
-        confidence=payload.confidence,
-        session_id=str(session.id),
-    )
-    attempt = grade_and_record_attempt(db, student_id, attempt_payload, question)
-
-    item.attempt_id = attempt.id
-    db.commit()
+        attempt = grade_and_record_attempt(db, student_id, attempt_payload, question, commit=False)
+        item.attempt_id = attempt.id
+        # Evidence and its frozen-slot linkage are accepted together. DNA
+        # still changes only on explicit completion of a diagnostic.
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     _, remaining = get_progress(db, session)
     return attempt, remaining
@@ -318,32 +327,34 @@ def complete_diagnostic(
     Attempt/EvidenceEvent at all. completed_at is set only on the
     transition into COMPLETED, so repeated calls don't move it.
 
-    Transaction safety: session.status/completed_at are only written
-    AFTER every recalculate_learning_state call has returned
-    successfully. If recalculation raises partway through, the session
-    is left IN_PROGRESS rather than being marked COMPLETED over a
-    partial result — the student (or a retry) can safely call complete
-    again later, since recalculation is idempotent per concept.
+    State upserts and completion status share one transaction. A failed
+    recalculation rolls back every concept, preserving prior state. The
+    profile lock also serializes completion against practice submissions
+    and diagnostic answers for this student on PostgreSQL.
     """
-    if session.status != DiagnosticStatus.COMPLETED:
-        _, remaining = get_progress(db, session)
-        if remaining > 0:
-            raise DiagnosticIncompleteError(
-                f"Diagnostic session is not fully answered yet: "
-                f"{remaining} of {session.total_questions} question(s) remain."
-            )
-
-    tested_concept_ids = get_tested_concepts(db, session)
-
-    states: list[LearningState] = [
-        recalculate_learning_state(db, session.student_id, concept_id)
-        for concept_id in tested_concept_ids
-    ]
-
-    if session.status != DiagnosticStatus.COMPLETED:
-        session.status = DiagnosticStatus.COMPLETED
-        session.completed_at = datetime.now(timezone.utc)
-        db.commit()
+    try:
+        lock_student_for_update(db, session.student_id)
+        # The router may have loaded this row before a concurrent completion.
         db.refresh(session)
+        if session.status != DiagnosticStatus.COMPLETED:
+            _, remaining = get_progress(db, session)
+            if remaining > 0:
+                raise DiagnosticIncompleteError(
+                    f"Diagnostic session is not fully answered yet: "
+                    f"{remaining} of {session.total_questions} question(s) remain."
+                )
+
+        tested_concept_ids = get_tested_concepts(db, session)
+        states = [
+            recalculate_learning_state(db, session.student_id, concept_id, commit=False)
+            for concept_id in tested_concept_ids
+        ]
+        if session.status != DiagnosticStatus.COMPLETED:
+            session.status = DiagnosticStatus.COMPLETED
+            session.completed_at = datetime.now(timezone.utc)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     return session, states

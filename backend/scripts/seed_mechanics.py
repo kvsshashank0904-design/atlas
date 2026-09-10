@@ -69,7 +69,8 @@ SAMPLE_QUESTIONS = [
         "concept_code": "PHY_NLM_001",
         "question_text": (
             "Two blocks (3 kg and 2 kg) connected by a string are pulled by a "
-            "12 N force on a frictionless surface. Find the tension in the string."
+            "12 N force applied to the 3 kg block, away from the 2 kg block, "
+            "on a frictionless surface. Find the tension in the light, taut string."
         ),
         "answer": "4.8 N",
         "solution": (
@@ -115,6 +116,8 @@ def seed():
                 )
                 db.add(concept)
                 db.flush()
+            elif concept.chapter_id != chapter.id:
+                raise ValueError(f"Concept {item['code']} already belongs to another chapter")
             code_to_concept[item["code"]] = concept
 
         for item in CONCEPT_CHAIN:
@@ -134,14 +137,14 @@ def seed():
                     )
 
         for q in SAMPLE_QUESTIONS:
+            concept = code_to_concept[q["concept_code"]]
             existing = (
                 db.query(Question)
-                .filter_by(question_text=q["question_text"])
+                .filter_by(question_text=q["question_text"], primary_concept_id=concept.id)
                 .first()
             )
             if existing:
                 continue
-            concept = code_to_concept[q["concept_code"]]
             db.add(
                 Question(
                     question_text=q["question_text"],
@@ -159,6 +162,9 @@ def seed():
 
         db.commit()
         print(f"Seeded {len(CONCEPT_CHAIN)} concepts and {len(SAMPLE_QUESTIONS)} sample questions.")
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 

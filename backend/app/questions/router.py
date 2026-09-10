@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.config import settings
 from app.auth.dependencies import get_current_user
 from app.curriculum.models import Concept
 from app.questions.models import Question, QuestionConcept
@@ -21,6 +22,9 @@ def create_question(
     (Section 5: don't build complex auth for MVP) — restricting this to
     real content editors is a Phase 1 follow-up, tracked in later_vault.md.
     """
+    editors = {email.strip().lower() for email in settings.CONTENT_EDITOR_EMAILS.split(",") if email.strip()}
+    if _.email.lower() not in editors:
+        raise HTTPException(status_code=403, detail="Content editor access required")
     primary_concept = (
         db.query(Concept).filter(Concept.concept_code == payload.primary_concept_code).first()
     )

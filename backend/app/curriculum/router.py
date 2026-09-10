@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.core.database import get_db
 from app.auth.dependencies import get_current_user
-from app.curriculum.models import Subject, Concept
+from app.curriculum.models import Subject, Chapter, Concept
 from app.curriculum.schemas import SubjectOut, ConceptOut
 
 router = APIRouter(prefix="/curriculum", tags=["curriculum"])
@@ -13,7 +13,7 @@ router = APIRouter(prefix="/curriculum", tags=["curriculum"])
 def list_subjects(db: Session = Depends(get_db), _=Depends(get_current_user)):
     subjects = (
         db.query(Subject)
-        .options(joinedload(Subject.chapters).joinedload("concepts"))
+        .options(joinedload(Subject.chapters).joinedload(Chapter.concepts))
         .all()
     )
     return subjects

@@ -22,13 +22,16 @@ def _normalize(answer: str) -> str:
 
 
 def grade_and_record_attempt(
-    db: Session, student_id, payload: AttemptSubmit, question: Question
+    db: Session, student_id, payload: AttemptSubmit, question: Question, *, commit: bool = True
 ) -> Attempt:
     """
     Grades `payload` against `question.answer` (never against anything
     the client sent), persists the Attempt, then derives exactly one
     EvidenceEvent from it. Both writes happen in the same transaction so
     an Attempt can never exist without its Evidence, or vice versa.
+    Pass commit=False when a caller must atomically persist session linkage
+    or LearningState too; that caller owns commit/rollback. Flush in either
+    mode so subsequent scoring sees the new evidence with autoflush=False.
     """
     is_correct = _normalize(payload.selected_answer) == _normalize(question.answer)
 
@@ -63,6 +66,8 @@ def grade_and_record_attempt(
     )
     db.add(evidence)
 
-    db.commit()
-    db.refresh(attempt)
+    db.flush()
+    if commit:
+        db.commit()
+        db.refresh(attempt)
     return attempt

@@ -7,6 +7,16 @@ from app.auth.dependencies import get_current_user
 from app.students.models import StudentProfile
 
 
+def lock_student_for_update(db: Session, student_id) -> None:
+    """Serialize a student's evidence/state writes until commit or rollback.
+
+    Lock the existing profile, including when no LearningState exists yet.
+    PostgreSQL enforces this row lock; SQLite unit tests do not exercise it.
+    All application attempt/completion writers acquire this lock first.
+    """
+    db.query(StudentProfile).filter(StudentProfile.id == student_id).with_for_update().one()
+
+
 def get_current_student_profile(
     db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
 ) -> StudentProfile:
